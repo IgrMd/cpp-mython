@@ -1,6 +1,8 @@
 #include "statement.h"
 
+#include <cassert>
 #include <iostream>
+#include <optional>
 #include <sstream>
 
 using namespace std;
@@ -16,160 +18,316 @@ const string ADD_METHOD = "__add__"s;
 const string INIT_METHOD = "__init__"s;
 }  // namespace
 
-ObjectHolder Assignment::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+
+// ----- Assignment -----
+Assignment::Assignment(std::string var, std::unique_ptr<Statement> rv)
+	: var_(std::move(var))
+	, rv_(std::move(rv)) {
 }
 
-Assignment::Assignment(std::string /*var*/, std::unique_ptr<Statement> /*rv*/) {
+ObjectHolder Assignment::Execute(Closure& closure, Context& context) {
+	closure[var_] = rv_->Execute(closure, context);
+	return ObjectHolder::Share(*closure.at(var_).Get());
 }
 
-VariableValue::VariableValue(const std::string& /*var_name*/) {
+// ----- VariableValue -----
+VariableValue::VariableValue(const std::string& var_name)
+	: ids_({ var_name }) {
 }
 
-VariableValue::VariableValue(std::vector<std::string> /*dotted_ids*/) {
+VariableValue::VariableValue(std::vector<std::string> dotted_ids)
+	: ids_(std::move(dotted_ids)) {
 }
 
-ObjectHolder VariableValue::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder VariableValue::Execute(Closure& closure, [[maybe_unused]] Context& context) {
+	Closure* fields = &closure;
+	for (size_t i = 0; i + 1 < ids_.size(); ++i) {
+		if (!fields->count(ids_[i])) {
+			throw std::runtime_error("Identifier \'"s + ids_[i] + "\' is undefined"s);
+		}
+		fields = &fields->at(ids_[i]).TryAs<runtime::ClassInstance>()->Fields();
+	}
+	if (!fields->count(ids_.back())) {
+		throw std::runtime_error("Identifier \'"s + ids_.back() + "\' is undefined"s);
+	}
+	return fields->at(ids_.back());
 }
 
-unique_ptr<Print> Print::Variable(const std::string& /*name*/) {
-    // Заглушка, реализуйте метод самостоятельно
-    throw std::logic_error("Not implemented"s);
+// ----- Print -----
+Print::Print(vector<unique_ptr<Statement>> args)
+	:args_(std::move(args)) {
 }
 
-Print::Print(unique_ptr<Statement> /*argument*/) {
-    // Заглушка, реализуйте метод самостоятельно
+Print::Print(unique_ptr<Statement> argument) {
+	args_.push_back(std::move(argument));
 }
 
-Print::Print(vector<unique_ptr<Statement>> /*args*/) {
-    // Заглушка, реализуйте метод самостоятельно
+unique_ptr<Print> Print::Variable(const std::string& name) {
+	return make_unique<Print>(make_unique<VariableValue>(name));
 }
 
-ObjectHolder Print::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Print::Execute(Closure& closure, Context& context) {
+	std::ostringstream os;
+	bool first = true;
+	for (const auto& arg : args_) {
+		if (!first) {
+			os << ' ';
+		}
+		if (ObjectHolder oh = arg->Execute(closure, context)) {
+			oh->Print(os, context);
+		} else {
+			os << "None"sv;
+		}
+		first = false;
+	}
+	os << '\n';
+	context.GetOutputStream() << os.str();
+	return ObjectHolder::Own(runtime::String{ os.str() });
 }
 
-MethodCall::MethodCall(std::unique_ptr<Statement> /*object*/, std::string /*method*/,
-                       std::vector<std::unique_ptr<Statement>> /*args*/) {
-    // Заглушка. Реализуйте метод самостоятельно
+static std::vector<ObjectHolder> GetActualArgs(const std::vector<std::unique_ptr<Statement>>& args,
+	Closure& closure, Context& context) {
+	std::vector<ObjectHolder> actual_args;
+	for (const auto& arg : args) {
+		actual_args.push_back(std::move(arg->Execute(closure, context)));
+	}
+	return actual_args;
 }
 
-ObjectHolder MethodCall::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+MethodCall::MethodCall(std::unique_ptr<Statement> object, std::string method,
+					   std::vector<std::unique_ptr<Statement>> args)
+	: object_(std::move(object))
+	, method_(std::move(method))
+	, args_(std::move(args)) {
 }
 
-ObjectHolder Stringify::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder MethodCall::Execute(Closure& closure, Context& context) {
+	runtime::ClassInstance* obj = object_->Execute(closure, context).TryAs<runtime::ClassInstance>();
+	if (obj && obj->HasMethod(method_, args_.size())) {
+		std::vector<ObjectHolder> actual_args = GetActualArgs(args_, closure, context);
+		return obj->Call(method_, actual_args, context);
+	}
+	return {};
 }
 
-ObjectHolder Add::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Stringify::Execute(Closure& closure, Context& context) {
+	std::ostringstream os;
+	if (ObjectHolder oh = argument_->Execute(closure, context)) {
+		oh->Print(os, context);
+	} else {
+		os << "None"sv;
+	}
+	return ObjectHolder::Own(runtime::String{ os.str() });
 }
 
-ObjectHolder Sub::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+template<typename T>
+static std::optional<ObjectHolder> AddSame(ObjectHolder& lhs, ObjectHolder& rhs) {
+	if (lhs.TryAs<T>() && rhs.TryAs<T>()) {
+		return ObjectHolder::Own<T>(lhs.TryAs<T>()->GetValue() + rhs.TryAs<T>()->GetValue());
+	}
+	return std::nullopt;
 }
 
-ObjectHolder Mult::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+// ----- Binary Operations -----
+ObjectHolder Add::Execute(Closure& closure, Context& context) {
+	ObjectHolder lhs_oh = lhs_->Execute(closure, context);
+	ObjectHolder rhs_oh = rhs_->Execute(closure, context);
+	if (!lhs_oh || !rhs_oh) {
+		throw std::runtime_error("Cannot add/concatenate objects"s);
+	}
+	if (auto numeric_result = AddSame<runtime::Number>(lhs_oh, rhs_oh)) {
+		return std::move(*numeric_result);
+	}
+	if (auto string_result = AddSame<runtime::String>(lhs_oh, rhs_oh)) {
+		return std::move(*string_result);
+	}
+	if (runtime::ClassInstance* lhs_class = lhs_oh.TryAs<runtime::ClassInstance>()) {
+		if (!lhs_class->HasMethod(ADD_METHOD, 1)) {
+			throw std::runtime_error("Cannot add/concatenate objects"s);
+		}
+		return lhs_class->Call(ADD_METHOD, { rhs_oh }, context);
+	}
+	throw std::runtime_error("Cannot add/concatenate objects"s);
+	return {};
 }
 
-ObjectHolder Div::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Sub::Execute(Closure& closure, Context& context) {
+	ObjectHolder lhs_oh = lhs_->Execute(closure, context);
+	ObjectHolder rhs_oh = rhs_->Execute(closure, context);
+	if (!lhs_oh || !rhs_oh) {
+		throw std::runtime_error("Cannot sub objects"s);
+	}
+	if (lhs_oh.TryAs<runtime::Number>() && rhs_oh.TryAs<runtime::Number>()) {
+		return ObjectHolder::Own<runtime::Number>(
+				lhs_oh.TryAs<runtime::Number>()->GetValue() -
+				rhs_oh.TryAs<runtime::Number>()->GetValue());
+	}
+	throw std::runtime_error("Cannot sub objects"s);
+	return {};
 }
 
-ObjectHolder Compound::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Mult::Execute(Closure& closure, Context& context) {
+	ObjectHolder lhs_oh = lhs_->Execute(closure, context);
+	ObjectHolder rhs_oh = rhs_->Execute(closure, context);
+	if (!lhs_oh || !rhs_oh) {
+		throw std::runtime_error("Cannot mult objects"s);
+	}
+	if (lhs_oh.TryAs<runtime::Number>() && rhs_oh.TryAs<runtime::Number>()) {
+		return ObjectHolder::Own<runtime::Number>(
+			lhs_oh.TryAs<runtime::Number>()->GetValue() *
+			rhs_oh.TryAs<runtime::Number>()->GetValue());
+	}
+	throw std::runtime_error("Cannot mult objects"s);
+	return {};
 }
 
-ObjectHolder Return::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Div::Execute(Closure& closure, Context& context) {
+	ObjectHolder lhs_oh = lhs_->Execute(closure, context);
+	ObjectHolder rhs_oh = rhs_->Execute(closure, context);
+	if (!lhs_oh || !rhs_oh) {
+		throw std::runtime_error("Cannot div objects"s);
+	}
+	if (lhs_oh.TryAs<runtime::Number>() && rhs_oh.TryAs<runtime::Number>()) {
+		int rhs_value = rhs_oh.TryAs<runtime::Number>()->GetValue();
+		if (rhs_value == 0) {
+			throw std::runtime_error("Cannot div by zero"s);
+		}
+		return ObjectHolder::Own<runtime::Number>(
+			lhs_oh.TryAs<runtime::Number>()->GetValue() /
+			rhs_value);
+	}
+	throw std::runtime_error("Cannot div objects"s);
+	return {};
 }
 
-ClassDefinition::ClassDefinition(ObjectHolder /*cls*/) {
-    // Заглушка. Реализуйте метод самостоятельно
+ObjectHolder Compound::Execute(Closure& closure, Context& context) {
+	for (const auto& stmt : stmts_) {
+		stmt->Execute(closure, context);
+	}
+	return {};
 }
 
-ObjectHolder ClassDefinition::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Return::Execute(Closure& closure, Context& context) {
+	throw ReturnException(std::move(statement_->Execute(closure, context)));
+	return {};
 }
 
-FieldAssignment::FieldAssignment(VariableValue /*object*/, std::string /*field_name*/,
-                                 std::unique_ptr<Statement> /*rv*/) {
+ClassDefinition::ClassDefinition(ObjectHolder cls)
+: cls_(std::move(cls))
+, cls_name_(cls_.TryAs<runtime::Class>()->GetName()) {
 }
 
-ObjectHolder FieldAssignment::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder ClassDefinition::Execute(Closure& closure, [[maybe_unused]] Context& context) {
+	closure[cls_name_] = cls_;
+	return closure.at(cls_name_);
 }
 
-IfElse::IfElse(std::unique_ptr<Statement> /*condition*/, std::unique_ptr<Statement> /*if_body*/,
-               std::unique_ptr<Statement> /*else_body*/) {
-    // Реализуйте метод самостоятельно
+// ----- FieldAssignment -----
+FieldAssignment::FieldAssignment(VariableValue object, std::string field_name,
+								 std::unique_ptr<Statement> rv)
+	: object_(std::move(object))
+	, field_name_(std::move(field_name))
+	, rv_(std::move(rv)) {
 }
 
-ObjectHolder IfElse::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder FieldAssignment::Execute(Closure& closure, Context& context) {
+	auto obg = object_.Execute(closure, context);
+	obg.TryAs<runtime::ClassInstance>()->Fields()[field_name_] = rv_->Execute(closure, context);
+	return ObjectHolder::Share(*obg.TryAs<runtime::ClassInstance>()->Fields().at(field_name_).Get());
 }
 
-ObjectHolder Or::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+// ----- IfElse -----
+IfElse::IfElse(std::unique_ptr<Statement> condition, std::unique_ptr<Statement> if_body,
+			   std::unique_ptr<Statement> else_body)
+	: condition_(std::move(condition))
+	, if_body_(std::move(if_body))
+	, else_body_(std::move(else_body)) {
 }
 
-ObjectHolder And::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder IfElse::Execute(Closure& closure, Context& context) {
+	ObjectHolder condition = condition_->Execute(closure, context);
+	if (!condition) {
+		assert(false);
+	}
+	if (condition.TryAs<runtime::Bool>()->GetValue()) {
+		if (ObjectHolder if_body = if_body_->Execute(closure, context)) {
+			return if_body;
+		}
+	} else if (else_body_) {
+		if (ObjectHolder else_body = else_body_->Execute(closure, context)) {
+			return else_body;
+		}
+	}
+	return {};
 }
 
-ObjectHolder Not::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+static bool IsTrue(const ObjectHolder& obj, Context& context) {
+	return runtime::Equal(obj, ObjectHolder::Own(runtime::Bool(true)), context);
 }
 
-Comparison::Comparison(Comparator /*cmp*/, unique_ptr<Statement> lhs, unique_ptr<Statement> rhs)
-    : BinaryOperation(std::move(lhs), std::move(rhs)) {
-    // Реализуйте метод самостоятельно
+ObjectHolder Or::Execute(Closure& closure, Context& context) {
+	if (IsTrue(lhs_->Execute(closure, context), context) ||
+		IsTrue(rhs_->Execute(closure, context), context)) {
+		return ObjectHolder::Own(runtime::Bool(true));
+	}
+	return ObjectHolder::Own(runtime::Bool(false));
 }
 
-ObjectHolder Comparison::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder And::Execute(Closure& closure, Context& context) {
+	if (IsTrue(lhs_->Execute(closure, context), context) &&
+		IsTrue(rhs_->Execute(closure, context), context)) {
+		return ObjectHolder::Own(runtime::Bool(true));
+	}
+	return ObjectHolder::Own(runtime::Bool(false));
 }
 
-NewInstance::NewInstance(const runtime::Class& /*class_*/, std::vector<std::unique_ptr<Statement>> /*args*/){
-    // Заглушка. Реализуйте метод самостоятельно
+ObjectHolder Not::Execute(Closure& closure, Context& context) {
+	return ObjectHolder::Own(runtime::Bool(!argument_->Execute(closure, context).TryAs<runtime::Bool>()->GetValue()));
 }
 
-NewInstance::NewInstance(const runtime::Class& /*class_*/) {
-    // Заглушка. Реализуйте метод самостоятельно
+// ----- Comparison -----
+Comparison::Comparison(Comparator cmp, unique_ptr<Statement> lhs, unique_ptr<Statement> rhs)
+	: BinaryOperation(std::move(lhs), std::move(rhs))
+	, cmp_(std::move(cmp)) {
 }
 
-ObjectHolder NewInstance::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+ObjectHolder Comparison::Execute(Closure& closure, Context& context) {
+	bool result =  cmp_(lhs_->Execute(closure, context), rhs_->Execute(closure, context), context);
+	return ObjectHolder::Own(runtime::Bool(result));
 }
 
-MethodBody::MethodBody(std::unique_ptr<Statement>&& /*body*/) {
+// ----- NewInstance -----
+NewInstance::NewInstance(const runtime::Class& class_)
+	: class_(class_) {
 }
 
-ObjectHolder MethodBody::Execute(Closure& /*closure*/, Context& /*context*/) {
-    // Заглушка. Реализуйте метод самостоятельно
-    return {};
+NewInstance::NewInstance(const runtime::Class& class_, std::vector<std::unique_ptr<Statement>> args)
+	: class_(class_)
+	, args_(std::move(args)) {
+}
+
+ObjectHolder NewInstance::Execute(Closure& closure, Context& context) {
+	auto oh = ObjectHolder::Own(runtime::ClassInstance{ class_ });
+	if (auto* class_inst = oh.TryAs<runtime::ClassInstance>()) {
+		if (class_inst->HasMethod(INIT_METHOD, args_.size())) {
+			std::vector<ObjectHolder> actual_args = GetActualArgs(args_, closure, context);
+			class_inst->Call(INIT_METHOD, actual_args, context);
+		}
+	}
+	return oh;
+}
+
+MethodBody::MethodBody(std::unique_ptr<Statement>&& body)
+	: body_(std::move(body)) {
+}
+
+ObjectHolder MethodBody::Execute(Closure& closure, Context& context) {
+	try {
+		body_->Execute(closure, context);
+	} catch (ReturnException& e) {
+		return std::move(e.Result());
+	}
+	return {};
 }
 
 }  // namespace ast

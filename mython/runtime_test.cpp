@@ -1,7 +1,7 @@
 #include "runtime.h"
+#include "test_runner_p.h"
 
 #include <functional>
-#include <test_runner.h>
 
 using namespace std;
 

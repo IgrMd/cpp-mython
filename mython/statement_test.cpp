@@ -1,6 +1,5 @@
 #include "statement.h"
-
-#include <test_runner.h>
+#include "test_runner_p.h"
 
 using namespace std;
 
@@ -75,6 +74,11 @@ void TestVariable() {
     Closure closure = {{"x"s, ObjectHolder::Share(num)}, {"w"s, ObjectHolder::Share(word)}};
     ASSERT(VariableValue("x"s).Execute(closure, context).Get() == &num);
     ASSERT(VariableValue("w"s).Execute(closure, context).Get() == &word);
+    try {
+        VariableValue("unknown"s).Execute(closure, context);
+    } catch (exception& e) {
+        auto what = e.what();
+    }
     ASSERT_THROWS(VariableValue("unknown"s).Execute(closure, context), std::runtime_error);
 
     ASSERT(context.output.str().empty());
@@ -296,7 +300,7 @@ void TestCompound() {
         make_unique<Assignment>("y"s, make_unique<NumericConst>(2)),
         make_unique<Assignment>("z"s, make_unique<VariableValue>("x"s)),
     };
-
+    //cpd.AddStatement(make_unique<Assignment>("x"s, make_unique<StringConst>("one"s)));
     Closure closure;
     auto result = cpd.Execute(closure, context);
 
